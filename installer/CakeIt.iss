@@ -20,7 +20,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\CakeIt.exe
 CloseApplications=yes
 RestartApplications=no
-ExtraDiskSpaceRequired=15000000000
+ExtraDiskSpaceRequired=11000000000
 SetupLogging=yes
 DisableProgramGroupPage=yes
 
@@ -73,11 +73,13 @@ begin
       if Code <> 0 then RaiseException('Could not prepare the downloaded files. Check available disk space and try again.');
       if CompareText(GetSHA256OfFile(ExpandConstant('{tmp}\{#PackageName}')), '{#PackageSHA}') <> 0 then
         RaiseException('Game verification failed. Please try again.');
+      {#CleanupParts}
       ForceDirectories(ExpandConstant('{tmp}\payload'));
       if not Exec(ExpandConstant('{sys}\tar.exe'), ExpandConstant('-xf "{tmp}\{#PackageName}" -C "{tmp}\payload"'), '', SW_HIDE, ewWaitUntilTerminated, Code) then
         RaiseException('Could not extract the game.');
       if (Code <> 0) or not FileExists(ExpandConstant('{tmp}\payload\CakeIt\CakeIt.exe')) then
         RaiseException('Game extraction failed. Check available disk space and try again.');
+      DeleteFile(ExpandConstant('{tmp}\{#PackageName}'));
       Prepared := True;
     except
       Result := GetExceptionMessage;

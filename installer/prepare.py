@@ -29,7 +29,8 @@ for name in parts:
         raise ValueError('Incomplete or altered package')
 downloads = ' '.join(f"DownloadPage.Add('{prefix+n}', '{n}', '{entries[n]}');" for n in parts)
 join = '/D /C copy /B ' + '+'.join('"{tmp}\\'+n+'"' for n in parts) + ' "{tmp}\\'+base+'" >nul'
-values = {'ReleaseTag': tag, 'PackageName': base, 'PackageSHA': entries[base], 'Downloads': downloads, 'JoinCommand': join}
+cleanup = ' '.join("DeleteFile(ExpandConstant('{tmp}\\"+n+"'));" for n in parts)
+values = {'ReleaseTag': tag, 'PackageName': base, 'PackageSHA': entries[base], 'Downloads': downloads, 'JoinCommand': join, 'CleanupParts':cleanup}
 # ISPP permits a double-quoted literal with doubled embedded double quotes.
 (root / 'package.iss').write_text('\n'.join('#define '+key+' "'+value.replace('"','""')+'"' for key,value in values.items())+'\n',encoding='utf-8')
 print(f'Installer configured: {tag}, {len(parts)} payload parts, verified SHA256 metadata')
