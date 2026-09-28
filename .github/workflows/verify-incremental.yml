@@ -1,0 +1,58 @@
+name: Verify incremental installer
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release to verify before publishing
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Download and verify installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[\w.-]{1,63}$') { throw 'Invalid release tag' }
+          gh release download $env:RELEASE_TAG -R femanzo/cakeit-releases -p CakeIt-Setup.exe -p SHA256SUMS.txt
+          if ($LASTEXITCODE) { throw 'Download failed' }
+          $line = Get-Content SHA256SUMS.txt | Where-Object { $_ -match '  CakeIt-Setup\.exe$' }
+          if (!$line -or (Get-FileHash CakeIt-Setup.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $line.Split(' ')[0]) { throw 'Checksum mismatch' }
+      - name: Install, verify saves and uninstall without launching gameplay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:RUNNER_TEMP 'CakeItIncrementalQA'
+          $saves = Join-Path $env:LOCALAPPDATA 'CakeIt/Saved/SaveGames'
+          $legacy = Join-Path $env:LOCALAPPDATA 'Programs/CakeIt/CakeIt/Saved/SaveGames'
+          New-Item -ItemType Directory -Force $saves,$legacy | Out-Null
+          Set-Content (Join-Path $saves 'career.sav') 'current-save'
+          Set-Content (Join-Path $legacy 'career.sav') 'old-save'
+          Set-Content (Join-Path $legacy 'cake.sav') 'legacy-cake'
+          $install = Start-Process -FilePath ./CakeIt-Setup.exe -ArgumentList @('--silent','--installto',"`"$target`"") -PassThru -Wait -WindowStyle Hidden
+          if ($install.ExitCode) { throw "Install failed: $($install.ExitCode)" }
+          $current = Join-Path $target 'current'
+          foreach ($relative in @('CakeItLauncher.exe','Game/CakeIt/Binaries/Win64/CakeIt-Win64-Shipping.exe','Game/CakeIt/Content/Paks/CakeIt-Windows.ucas')) {
+            if (!(Test-Path (Join-Path $current $relative))) { throw "Missing $relative" }
+          }
+          if (Get-ChildItem $current -Recurse -Filter '*.gguf') { throw 'AI model must not be distributed' }
+          if (Get-ChildItem $current -Recurse -Filter 'llama-server.exe') { throw 'Local inference runtime must not be distributed' }
+          if (!(Test-Path (Join-Path $current 'Game/CakeIt/Content/CakeIt/LocalAI/PhotoOrders/pistachio_strawberry.json'))) { throw 'Photo recipe missing' }
+          $deadline = (Get-Date).AddSeconds(45)
+          while (!(Test-Path (Join-Path $saves 'cake.sav')) -and (Get-Date) -lt $deadline) { Start-Sleep 1 }
+          if ((Get-Content (Join-Path $saves 'career.sav')).Trim() -ne 'current-save' -or (Get-Content (Join-Path $saves 'cake.sav')).Trim() -ne 'legacy-cake') { throw 'Save migration failed' }
+          if (Get-Process 'CakeIt-Win64-Shipping' -ErrorAction SilentlyContinue) { throw 'Gameplay must not launch during installer QA' }
+          # Only stop this runner's launcher, never an unrelated process.
+          Get-Process CakeItLauncher -ErrorAction SilentlyContinue | Where-Object { $_.Path.StartsWith($target,[StringComparison]::OrdinalIgnoreCase) } | Stop-Process
+          $uninstall = Start-Process -FilePath (Join-Path $target 'Update.exe') -ArgumentList @('uninstall','--silent') -PassThru -Wait -WindowStyle Hidden
+          if ($uninstall.ExitCode) { throw 'Uninstall failed' }
+          if (Test-Path (Join-Path $current 'CakeItLauncher.exe')) { throw 'Installed binaries remain after uninstall' }
+          if ((Get-Content (Join-Path $saves 'career.sav')).Trim() -ne 'current-save' -or (Get-Content (Join-Path $saves 'cake.sav')).Trim() -ne 'legacy-cake') { throw 'Uninstall modified saves' }
+          'Verified installation, no local AI, legacy save import, save-preserving uninstall; gameplay not launched.' >> $env:GITHUB_STEP_SUMMARY
