@@ -1,0 +1,68 @@
+name: Publish demo to CakeIt site
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag to register or retry
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cakeit-site-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'femanzo/cakeit-releases'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Register release and notify active demo players
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # All input is passed as data, never interpolated into shell code.
+          release_id=$(gh api "repos/femanzo/cakeit-releases/releases/tags/$(jq -rn --arg tag "$RELEASE_TAG" '$tag|@uri')" --jq '.id')
+          export RELEASE_ID="$release_id"
+          node --input-type=module <<'NODE'
+          import {appendFileSync} from 'node:fs';
+          const endpoint = 'https://cakeit.ez.run/api/demo/automation/release';
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const oidc = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+            oidc.searchParams.set('audience', endpoint);
+            const auth = await fetch(oidc, {headers: {Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`}, signal: AbortSignal.timeout(20000)});
+            if (!auth.ok) throw new Error(`GitHub identity request failed (${auth.status})`);
+            const {value} = await auth.json();
+            if (!value) throw new Error('GitHub did not return an identity token');
+            console.log(`::add-mask::${value}`);
+            let response;
+            try {
+              response = await fetch(endpoint, {method:'POST', headers:{Authorization:`Bearer ${value}`,'Content-Type':'application/json'},body:JSON.stringify({releaseId:Number(process.env.RELEASE_ID)}),signal:AbortSignal.timeout(90000)});
+            } catch {
+              console.log('Temporary connection failure; retrying safely.');
+              await new Promise(resolve=>setTimeout(resolve,15000)); continue;
+            }
+            const result = await response.json().catch(()=>({error:'Invalid site response'}));
+            if (response.ok && result.ok) {
+              console.log(JSON.stringify(result));
+              if (result.remaining === 0) {
+                appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Release registered: ${result.releaseId}\n\nNotifications sent: ${result.sent}\n${result.superseded?'Superseded release: no announcements sent.':''}\n`);
+                process.exit(0);
+              }
+            } else if (response.status < 500 && response.status !== 429) {
+              throw new Error(`Site rejected release (${response.status}): ${result.error}`);
+            } else console.log(`Temporary site error (${response.status}); retrying safely.`);
+            await new Promise(resolve=>setTimeout(resolve,15000));
+          }
+          throw new Error('Publication did not finish; rerun this workflow to resume safely.');
+          NODE
