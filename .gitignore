@@ -1,0 +1,4 @@
+installer/package.iss
+installer/release.json
+installer/SHA256SUMS.txt
+installer/output/

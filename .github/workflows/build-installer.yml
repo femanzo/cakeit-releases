@@ -1,0 +1,67 @@
+name: Build Windows installer
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published game release tag
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: cakeit-installer
+  cancel-in-progress: false
+jobs:
+  installer:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build installer using the installed Inno Setup compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[\w.-]{1,63}$') { throw 'Invalid tag' }
+          gh api "repos/femanzo/cakeit-releases/releases/tags/$env:RELEASE_TAG" > installer/release.json
+          if ($LASTEXITCODE) { throw 'Release lookup failed' }
+          gh release download $env:RELEASE_TAG --pattern SHA256SUMS.txt --dir installer --repo femanzo/cakeit-releases
+          if ($LASTEXITCODE) { throw 'Manifest download failed' }
+          python installer/prepare.py
+          if ($LASTEXITCODE) { throw 'Invalid package metadata' }
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if (!(Test-Path -LiteralPath $compiler)) { throw 'Runner has no Inno Setup compiler' }
+          & $compiler installer/CakeIt.iss
+          if ($LASTEXITCODE) { throw 'Installer compilation failed' }
+      - name: Verify install and uninstall without launching the game
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:RUNNER_TEMP 'CakeItInstallerQA'
+          $log = Join-Path $env:RUNNER_TEMP 'cakeit-install.log'
+          $setup = Start-Process -FilePath 'installer/output/CakeIt-Setup.exe' -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$target`"", "/LOG=`"$log`"") -PassThru -Wait -WindowStyle Hidden
+          if ($setup.ExitCode -ne 0) { Get-Content $log -Tail 40; throw 'Installation failed' }
+          foreach ($relative in @('CakeIt.exe','CakeIt/Binaries/Win64/CakeIt-Win64-Shipping.exe','CakeIt/Content/Paks/CakeIt-Windows.ucas','CakeIt/Content/CakeIt/LocalAI/model.gguf','unins000.exe')) {
+            if (!(Test-Path -LiteralPath (Join-Path $target $relative))) { throw "Missing installed file: $relative" }
+          }
+          # User data must survive uninstall. No gameplay is launched.
+          $save = Join-Path $target 'CakeIt/Saved/InstallerQA.txt'
+          New-Item -ItemType Directory -Force (Split-Path $save) | Out-Null
+          Set-Content -LiteralPath $save -Value 'Preserve user data'
+          $uninstall = Start-Process -FilePath (Join-Path $target 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path (Join-Path $target 'CakeIt.exe')) -or !(Test-Path $save)) { throw 'Uninstall verification failed' }
+      - name: Publish verified installer and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hash = (Get-FileHash installer/output/CakeIt-Setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lines = @(Get-Content installer/SHA256SUMS.txt | Where-Object { $_ -notmatch '\sCakeIt-Setup\.exe$' }) + "$hash  CakeIt-Setup.exe"
+          [IO.File]::WriteAllText((Join-Path $pwd 'installer/SHA256SUMS.txt'), ($lines -join "`n")+"`n", [Text.UTF8Encoding]::new($false))
+          gh release upload $env:RELEASE_TAG installer/output/CakeIt-Setup.exe installer/SHA256SUMS.txt --clobber --repo femanzo/cakeit-releases
+          if ($LASTEXITCODE) { throw 'Upload failed' }
+          "Single-download installer published. SHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
