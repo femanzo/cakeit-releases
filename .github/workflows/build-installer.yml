@@ -8,6 +8,7 @@ on:
         type: string
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: cakeit-installer
   cancel-in-progress: false
@@ -65,3 +66,5 @@ jobs:
           gh release upload $env:RELEASE_TAG installer/output/CakeIt-Setup.exe installer/SHA256SUMS.txt --clobber --repo femanzo/cakeit-releases
           if ($LASTEXITCODE) { throw 'Upload failed' }
           "Single-download installer published. SHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
+          gh workflow run publish-site.yml --ref main -f "tag=$env:RELEASE_TAG" --repo femanzo/cakeit-releases
+          if ($LASTEXITCODE) { throw 'Installer uploaded, but site synchronization could not be started' }

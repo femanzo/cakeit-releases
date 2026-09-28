@@ -7,6 +7,10 @@ Download published installers from the Releases page. Source code is maintained 
 Builds are published only on the project owner's request, after validation. Each release should include its version, release notes and SHA-256 checksums.
 # Automatic site publication
 
+Players should download **CakeIt-Setup.exe** only. It presents a Windows installation wizard, downloads and verifies the game, creates shortcuts, and includes an uninstaller. Internet is required. The numbered archive parts are installer payloads; players do not need to download or join them manually.
+
+To package a game release, run **Actions → Build Windows installer** with its published tag. It uses the runner's installed Inno Setup compiler, tests installation and uninstallation without launching gameplay, publishes the EXE and checksum, and starts site synchronization. The site prefers the installer automatically. Installation is per-user and preserves player saves on uninstall.
+
 Publishing a stable GitHub release runs `.github/workflows/publish-site.yml`.
 The workflow authenticates to CakeIt with a short-lived GitHub OIDC token; no site admin password or long-lived secret is stored here.
 
