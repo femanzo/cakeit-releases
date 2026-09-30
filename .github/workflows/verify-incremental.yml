@@ -40,9 +40,23 @@ jobs:
           $install = Start-Process -FilePath ./CakeIt-Setup.exe -ArgumentList @('--silent','--installto',"`"$target`"") -PassThru -Wait -WindowStyle Hidden
           if ($install.ExitCode) { throw "Install failed: $($install.ExitCode)" }
           $current = Join-Path $target 'current'
-          foreach ($relative in @('CakeItLauncher.exe','Game/CakeIt/Binaries/Win64/CakeIt-Win64-Shipping.exe','Game/CakeIt/Content/Paks/CakeIt-Windows.ucas')) {
+          foreach ($relative in @('CakeItLauncher.exe','Game/CakeIt/Binaries/Win64/CakeIt-Win64-Shipping.exe')) {
             if (!(Test-Path (Join-Path $current $relative))) { throw "Missing $relative" }
           }
+          $paks = Join-Path $current 'Game/CakeIt/Content/Paks'
+          if (Test-Path (Join-Path $paks 'CakeItData-Windows.utoc')) {
+            if (!(Test-Path (Join-Path $paks 'CakeItData-Windows.pak'))) { throw 'Missing partitioned pak' }
+            # UE 5.8 FIoStoreTocHeader: PartitionCount at 52, PartitionSize at 88.
+            $toc = [IO.File]::ReadAllBytes((Join-Path $paks 'CakeItData-Windows.utoc'))
+            if ($toc.Length -lt 96 -or [Text.Encoding]::ASCII.GetString($toc,0,16) -ne '-==--==--==--==-' -or $toc[16] -lt 3 -or $toc[16] -gt 8) { throw 'Unsupported IoStore header' }
+            $count = [BitConverter]::ToUInt32($toc,52)
+            if ($count -lt 1 -or $count -gt 64 -or [BitConverter]::ToUInt64($toc,88) -ne 512MB) { throw 'Invalid IoStore partition layout' }
+            for ($i = 0; $i -lt $count; $i++) {
+              $name = if ($i -eq 0) { 'CakeItData-Windows.ucas' } else { "CakeItData-Windows_s$i.ucas" }
+              $file = Get-Item -LiteralPath (Join-Path $paks $name)
+              if ($file.Length -le 0 -or $file.Length -gt 512MB) { throw "Invalid partition $name" }
+            }
+          } elseif (!(Test-Path (Join-Path $paks 'CakeIt-Windows.ucas'))) { throw 'Missing game container' }
           if (Get-ChildItem $current -Recurse -Filter '*.gguf') { throw 'AI model must not be distributed' }
           if (Get-ChildItem $current -Recurse -Filter 'llama-server.exe') { throw 'Local inference runtime must not be distributed' }
           if (!(Test-Path (Join-Path $current 'Game/CakeIt/Content/CakeIt/LocalAI/PhotoOrders/pistachio_strawberry.json'))) { throw 'Photo recipe missing' }
